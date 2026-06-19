@@ -6,9 +6,10 @@ add_subdirectory(${JUCE_DIR} JUCE)
 
 juce_add_plugin(Vocoder
     PLUGIN_MANUFACTURER_CODE Manu
-    PLUGIN_CODE Vocd
+    PLUGIN_CODE ShVo
     FORMATS VST3
-    PRODUCT_NAME "Vocoder"
+    PRODUCT_NAME "My Vocoder 1"
+    NEEDS_MIDI_INPUT TRUE  # ← これを追加！
 )
 
 # ★追加1: JuceHeader.h を明示的に生成する
