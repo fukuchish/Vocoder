@@ -106,14 +106,7 @@ void VocoderAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock
     // 周波数再計算トリガーのリセット
     lastActiveBands = -1; 
 
-    // 内部オシレーターの初期化
-    for (int i = 0; i < numVoices; ++i)
-    {
-        carrierOscs[i].prepare(spec);
-        carrierOscs[i].initialise([](float x) { return x / juce::MathConstants<float>::pi; });
-        carrierGates[i] = 0.0f;
-        activeNotes[i] = -1;
-    }
+    // ※内部オシレーターの初期化処理は削除しました
 }
 
 void VocoderAudioProcessor::releaseResources() {}
@@ -126,44 +119,10 @@ void VocoderAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
     // 非正規化数によるCPUスパイク防止
     juce::ScopedNoDenormals noDenormals;
 
-    // --------------------------------------------------------------------------
-    // 1. 和音対応のMIDIノート振り分け処理
-    // --------------------------------------------------------------------------
-    for (const auto metadata : midiMessages)
-    {
-        auto message = metadata.getMessage();
-        int note = message.getNoteNumber();
-
-        if (message.isNoteOn())
-        {
-            // 空きボイスにノートを割り当て
-            for (int i = 0; i < numVoices; ++i)
-            {
-                if (carrierGates[i] == 0.0f)
-                {
-                    carrierOscs[i].setFrequency((float)message.getMidiNoteInHertz(note));
-                    carrierGates[i] = 1.0f;
-                    activeNotes[i] = note;
-                    break;
-                }
-            }
-        }
-        else if (message.isNoteOff())
-        {
-            // 該当するノートのボイスを停止
-            for (int i = 0; i < numVoices; ++i)
-            {
-                if (activeNotes[i] == note)
-                {
-                    carrierGates[i] = 0.0f;
-                    activeNotes[i] = -1;
-                }
-            }
-        }
-    }
+    // ※MIDIノートによる発音管理処理は削除しました
 
     // --------------------------------------------------------------------------
-    // 2. バンド数の動的割り当て
+    // 1. バンド数の動的割り当て
     // --------------------------------------------------------------------------
     int activeBands = (int)apvts.getRawParameterValue("bands")->load();
 
@@ -184,14 +143,15 @@ void VocoderAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
     }
 
     // --------------------------------------------------------------------------
-    // 3. パラメータの取得と係数計算
+    // 2. パラメータの取得と係数計算
     // --------------------------------------------------------------------------
     float mixWet = apvts.getRawParameterValue("mix")->load() * 0.01f;
     float mixDry = 1.0f - mixWet;
     float goodizePct = apvts.getRawParameterValue("goodize")->load() * 0.01f;
     float drive = 1.0f + (goodizePct * 4.0f); 
 
-    float q = apvts.getRawParameterValue("q")->load();
+    // 【修正】存在しないパラメータ "q" の読み込みを削除し、固定値（2.0f）に変更しています
+    float q = 2.0f; 
     float attackMs = apvts.getRawParameterValue("attack")->load();
     float releaseMs = apvts.getRawParameterValue("release")->load();
     float gainLinear = juce::Decibels::decibelsToGain(apvts.getRawParameterValue("gain")->load());
@@ -207,7 +167,7 @@ void VocoderAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
     float releaseCoef = std::exp(-1.0f / ((releaseMs * 0.001f) * currentSampleRate));
 
     // --------------------------------------------------------------------------
-    // 4. バスバッファの取得
+    // 3. バスバッファの取得
     // --------------------------------------------------------------------------
     auto voiceBuffer = getBusBuffer(buffer, true, 0); 
     auto synthBuffer = getBusBuffer(buffer, true, 1); 
@@ -224,42 +184,33 @@ void VocoderAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
         float outputSum = 0.0f;
         
         // ----------------------------------------------------------------------
-        // 5. フィルターとエンベロープ処理
+        // 4. フィルターとエンベロープ処理
         // ----------------------------------------------------------------------
-        // 指定されたバンド数だけ処理を実行
         for (int b = 0; b < activeBands; ++b)
         {
             float m = modFilters[b].processSample(0, modInput);
             float c = carFilters[b].processSample(0, carInput);
 
-            // 絶対値による振幅抽出
             float rect = std::abs(m);
             
-            // アタック/リリース特性を持つエンベロープ生成
             if (rect > envelopes[b])
                 envelopes[b] = attackCoef * envelopes[b] + (1.0f - attackCoef) * rect;
             else
                 envelopes[b] = releaseCoef * envelopes[b] + (1.0f - releaseCoef) * rect;
 
-            // キャリア信号へのエンベロープ適用と加算
             outputSum += c * envelopes[b];
         }
 
-        // バンド数に応じた音量補正
         float wetSignal = outputSum * (8.0f / (float)activeBands);
 
         // ----------------------------------------------------------------------
-        // 6. 出力合成とサチュレーション
+        // 5. 出力合成とサチュレーション
         // ----------------------------------------------------------------------
         float mixedSignal = (drySignal * mixDry) + (wetSignal * mixWet);
-        
-        // tanhカーブによるソフトクリッピング（アナログ感の付加）
         float goodizedSignal = std::tanh(mixedSignal * drive) / std::tanh(drive);
 
-        // 最終ゲイン適用
         channelData[s] = goodizedSignal * gainLinear;
         
-        // ステレオ時の右チャンネルコピー
         if (buffer.getNumChannels() > 1)
         {
             buffer.getWritePointer(1)[s] = channelData[s];
@@ -269,7 +220,7 @@ void VocoderAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
 
 juce::AudioProcessorEditor* VocoderAudioProcessor::createEditor()
 {
-    return new juce::GenericAudioProcessorEditor(*this);
+    return new VocoderAudioProcessorEditor(*this);
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

@@ -18,7 +18,7 @@ public:
     bool hasEditor() const override { return true; }
 
     const juce::String getName() const override { return "My Vocoder 1"; }
-    bool acceptsMidi() const override { return true; }
+    bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
     double getTailLengthSeconds() const override { return 0.0; }
 
@@ -46,10 +46,6 @@ private:
 
     double currentSampleRate = 44100.0;
 
-    static constexpr int numVoices = 8;
-    std::array<juce::dsp::Oscillator<float>, numVoices> carrierOscs;
-    std::array<float, numVoices> carrierGates;
-    std::array<int, numVoices> activeNotes;
     juce::Random random;
 
     // ▼ 新規追加：バンド数が変更されたかを検知するための変数
