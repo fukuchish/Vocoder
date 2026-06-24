@@ -37,21 +37,23 @@ private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameters();
     
     // ▼ 修正：16から一気に100バンドへ引き上げます！
-    static constexpr int numBands = 100;
+    static constexpr int maxBands = 100;
 
-    std::array<juce::dsp::StateVariableTPTFilter<float>, numBands> modFilters;
-    std::array<juce::dsp::StateVariableTPTFilter<float>, numBands> carFilters;
-    std::array<float, numBands> envelopes;
+    // ▼ 修正：配列のサイズは常に「最大値(100)」で確保しておきます
+    std::array<juce::dsp::StateVariableTPTFilter<float>, maxBands> modFilters;
+    std::array<juce::dsp::StateVariableTPTFilter<float>, maxBands> carFilters;
+    std::array<float, maxBands> envelopes;
 
-    juce::dsp::Oscillator<float> carrierOsc;
     double currentSampleRate = 44100.0;
 
-    
-    // ▼ 新規追加：8音同時発音（ポリフォニック）のための変数群
     static constexpr int numVoices = 8;
     std::array<juce::dsp::Oscillator<float>, numVoices> carrierOscs;
     std::array<float, numVoices> carrierGates;
-    std::array<int, numVoices> activeNotes; // どのMIDIノート番号を鳴らしているか記憶
+    std::array<int, numVoices> activeNotes;
+    juce::Random random;
+
+    // ▼ 新規追加：バンド数が変更されたかを検知するための変数
+    int lastActiveBands = -1; 
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(VocoderAudioProcessor)
 };
