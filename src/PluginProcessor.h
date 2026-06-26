@@ -36,8 +36,8 @@ public:
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameters();
     
-    // ▼ 修正：16から一気に100バンドへ引き上げます！
-    static constexpr int maxBands = 100;
+    // ▼ 修正：100バンドから32バンドへ上限を引き下げ
+    static constexpr int maxBands = 32;
 
     // ▼ 修正：配列のサイズは常に「最大値(100)」で確保しておきます
     std::array<juce::dsp::StateVariableTPTFilter<float>, maxBands> modFilters;

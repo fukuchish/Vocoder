@@ -29,10 +29,9 @@ VocoderAudioProcessor::createParameters()
 {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
 
-    // バンド数: 音の分割数（4〜100、デフォルト100）
-    // 少ないほどレトロ、多いほどクリアな音質に変化
+    // ▼ 修正：バンド数の範囲を 4〜32、デフォルトを 24 程度に変更
     layout.add(std::make_unique<juce::AudioParameterInt>(
-        "bands", "Bands", 4, 100, 100
+        "bands", "Bands", 4, 32, 16
     ));
 
     // Q値（レゾナンス）: フィルターの鋭さ
@@ -126,23 +125,38 @@ void VocoderAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
     // ※MIDIノートによる発音管理処理は削除しました
 
     // --------------------------------------------------------------------------
-    // 1. バンド数の動的割り当て
+    // 1. バンド数の動的割り当てと最適Q値の算出
     // --------------------------------------------------------------------------
     int activeBands = (int)apvts.getRawParameterValue("bands")->load();
 
-    // バンド数変更時のみ周波数を再計算
+    // バンド数変更時のみ周波数とQ値を再計算（CPU負荷の最適化）
     if (activeBands != lastActiveBands)
     {
         float minFreq = 100.0f;
         float maxFreq = 8000.0f;
         
-        // 対数スケールによる周波数の等分割
+        // 隣接バンド間の周波数比率（数式における 2^N に該当）
+        float ratio = std::pow(maxFreq / minFreq, 1.0f / (float)(activeBands - 1));
+
+        // 数式に基づく動的Q値の計算: Q = sqrt(R) / (R - 1)
+        float dynamicQ = std::sqrt(ratio) / (ratio - 1.0f);
+
+        // ※補足：滑舌をより強調したい場合は、この dynamicQ に 1.2f〜1.5f ほどの係数を掛けて
+        // わざとQ値を少し高め（鋭く）設定するのも実践的なテクニックです。
+
         for (int i = 0; i < activeBands; ++i)
         {
-            float freq = minFreq * std::pow(maxFreq / minFreq, (float)i / (activeBands - 1));
+            float freq = minFreq * std::pow(ratio, (float)i);
+            
+            // 周波数の設定
             modFilters[i].setCutoffFrequency(freq);
             carFiltersL[i].setCutoffFrequency(freq);
             carFiltersR[i].setCutoffFrequency(freq);
+
+            // 動的に算出したQ値の一括適用
+            modFilters[i].setResonance(dynamicQ);
+            carFiltersL[i].setResonance(dynamicQ);
+            carFiltersR[i].setResonance(dynamicQ);
         }
         lastActiveBands = activeBands; // 変更状態の記録
     }
@@ -155,22 +169,16 @@ void VocoderAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
     float goodizePct = apvts.getRawParameterValue("goodize")->load() * 0.01f;
     float drive = 1.0f + (goodizePct * 4.0f); 
 
-    // 【修正】存在しないパラメータ "q" の読み込みを削除し、固定値（2.0f）に変更しています
-    float q = 2.0f; 
+    // ▼ 削除：以前あった float q = 2.0f; や、その下のQ値更新用 forループ はすべて削除！
+
     float attackMs = apvts.getRawParameterValue("attack")->load();
     float releaseMs = apvts.getRawParameterValue("release")->load();
     float gainLinear = juce::Decibels::decibelsToGain(apvts.getRawParameterValue("gain")->load());
 
-    // 使用バンド分のQ値を更新
-    for (int i = 0; i < activeBands; ++i) {
-        modFilters[i].setResonance(q);
-        carFiltersL[i].setResonance(q);
-        carFiltersR[i].setResonance(q);
-    }
-
     // サンプル単位のエンベロープ係数
     float attackCoef = std::exp(-1.0f / ((attackMs * 0.001f) * currentSampleRate));
     float releaseCoef = std::exp(-1.0f / ((releaseMs * 0.001f) * currentSampleRate));
+    
 
     // --------------------------------------------------------------------------
     // 3. バスバッファの取得
