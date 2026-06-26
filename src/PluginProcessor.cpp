@@ -94,13 +94,17 @@ void VocoderAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock
     spec.numChannels = getTotalNumOutputChannels();
 
     // 最大数（100）のフィルターを事前準備
+    // prepareToPlay内の初期化
     for (int i = 0; i < maxBands; ++i)
     {
         modFilters[i].prepare(spec);
         modFilters[i].setType(juce::dsp::StateVariableTPTFilterType::bandpass);
         
-        carFilters[i].prepare(spec);
-        carFilters[i].setType(juce::dsp::StateVariableTPTFilterType::bandpass);
+        carFiltersL[i].prepare(spec);
+        carFiltersL[i].setType(juce::dsp::StateVariableTPTFilterType::bandpass);
+
+        carFiltersR[i].prepare(spec);
+        carFiltersR[i].setType(juce::dsp::StateVariableTPTFilterType::bandpass);
     }
 
     // 周波数再計算トリガーのリセット
@@ -137,7 +141,8 @@ void VocoderAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
         {
             float freq = minFreq * std::pow(maxFreq / minFreq, (float)i / (activeBands - 1));
             modFilters[i].setCutoffFrequency(freq);
-            carFilters[i].setCutoffFrequency(freq);
+            carFiltersL[i].setCutoffFrequency(freq);
+            carFiltersR[i].setCutoffFrequency(freq);
         }
         lastActiveBands = activeBands; // 変更状態の記録
     }
@@ -159,7 +164,8 @@ void VocoderAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
     // 使用バンド分のQ値を更新
     for (int i = 0; i < activeBands; ++i) {
         modFilters[i].setResonance(q);
-        carFilters[i].setResonance(q);
+        carFiltersL[i].setResonance(q);
+        carFiltersR[i].setResonance(q);
     }
 
     // サンプル単位のエンベロープ係数
@@ -177,43 +183,50 @@ void VocoderAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
     for (int s = 0; s < buffer.getNumSamples(); ++s)
     {
         // 信号未接続時は無音（0.0f）に設定
+        // 信号の取得（キャリアはステレオで取得）
         float modInput = voiceBuffer.getNumChannels() > 0 ? voiceBuffer.getSample(0, s) : 0.0f;
-        float carInput = synthBuffer.getNumChannels() > 0 ? synthBuffer.getSample(0, s) : 0.0f;
+        float carInputL = synthBuffer.getNumChannels() > 0 ? synthBuffer.getSample(0, s) : 0.0f;
+        float carInputR = synthBuffer.getNumChannels() > 1 ? synthBuffer.getSample(1, s) : carInputL; // キャリアがモノラルならRにはLと同じものを入れる
 
-        float drySignal = modInput;
-        float outputSum = 0.0f;
+        float drySignal = modInput; // モジュレーターの原音（必要に応じてLのみ）
+        float outputSumL = 0.0f;
+        float outputSumR = 0.0f;
         
-        // ----------------------------------------------------------------------
-        // 4. フィルターとエンベロープ処理
-        // ----------------------------------------------------------------------
         for (int b = 0; b < activeBands; ++b)
         {
+            // モジュレーターは1回のみ処理
             float m = modFilters[b].processSample(0, modInput);
-            float c = carFilters[b].processSample(0, carInput);
 
+            // キャリアはLとRを独立して処理
+            float cL = carFiltersL[b].processSample(0, carInputL);
+            float cR = carFiltersR[b].processSample(0, carInputR);
+
+            // モジュレーターからエンベロープ（声の動き）を抽出
             float rect = std::abs(m);
-            
             if (rect > envelopes[b])
                 envelopes[b] = attackCoef * envelopes[b] + (1.0f - attackCoef) * rect;
             else
                 envelopes[b] = releaseCoef * envelopes[b] + (1.0f - releaseCoef) * rect;
 
-            outputSum += c * envelopes[b];
+            // 抽出した1つの声の動きを、LとRのキャリアにそれぞれ掛ける
+            outputSumL += cL * envelopes[b];
+            outputSumR += cR * envelopes[b];
         }
 
-        float wetSignal = outputSum * (8.0f / (float)activeBands);
+        // 音量補正
+        float wetSignalL = outputSumL * (8.0f / (float)activeBands);
+        float wetSignalR = outputSumR * (8.0f / (float)activeBands);
 
-        // ----------------------------------------------------------------------
-        // 5. 出力合成とサチュレーション
-        // ----------------------------------------------------------------------
-        float mixedSignal = (drySignal * mixDry) + (wetSignal * mixWet);
-        float goodizedSignal = std::tanh(mixedSignal * drive) / std::tanh(drive);
-
-        channelData[s] = goodizedSignal * gainLinear;
+        // ミックス
+        float mixedSignalL = (drySignal * mixDry) + (wetSignalL * mixWet);
+        float mixedSignalR = (drySignal * mixDry) + (wetSignalR * mixWet); // Dry音はモジュレーターのモノラル音を両耳に流す
+        
+        // サチュレーションと最終出力
+        channelData[s] = (std::tanh(mixedSignalL * drive) / std::tanh(drive)) * gainLinear; // Lチャンネル
         
         if (buffer.getNumChannels() > 1)
         {
-            buffer.getWritePointer(1)[s] = channelData[s];
+            buffer.getWritePointer(1)[s] = (std::tanh(mixedSignalR * drive) / std::tanh(drive)) * gainLinear; // Rチャンネル
         }
     }
 }

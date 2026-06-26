@@ -41,8 +41,10 @@ private:
 
     // ▼ 修正：配列のサイズは常に「最大値(100)」で確保しておきます
     std::array<juce::dsp::StateVariableTPTFilter<float>, maxBands> modFilters;
-    std::array<juce::dsp::StateVariableTPTFilter<float>, maxBands> carFilters;
+    std::array<juce::dsp::StateVariableTPTFilter<float>, maxBands> carFiltersL; // 左チャンネル用
+    std::array<juce::dsp::StateVariableTPTFilter<float>, maxBands> carFiltersR; // 右チャンネル用
     std::array<float, maxBands> envelopes;
+
 
     double currentSampleRate = 44100.0;
 
