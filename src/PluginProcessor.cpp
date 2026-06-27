@@ -92,6 +92,14 @@ void VocoderAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock
     spec.maximumBlockSize = samplesPerBlock;
     spec.numChannels = getTotalNumOutputChannels();
 
+    // ▼ 新規追加：プリエンファシス・フィルターの初期化
+    preEmphasisFilter.prepare(spec);
+    // 3000Hz以上を +8dB ブースト（Q値は標準的な 0.707）
+    preEmphasisFilter.coefficients = juce::dsp::IIR::Coefficients<float>::makeHighShelf(
+        sampleRate, 3000.0, 0.707, juce::Decibels::decibelsToGain(8.0f)
+    );
+
+
     // 最大数（100）のフィルターを事前準備
     // prepareToPlay内の初期化
     for (int i = 0; i < maxBands; ++i)
@@ -129,20 +137,18 @@ void VocoderAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
     // --------------------------------------------------------------------------
     int activeBands = (int)apvts.getRawParameterValue("bands")->load();
 
-    // バンド数変更時のみ周波数とQ値を再計算（CPU負荷の最適化）
+    // バンド数変更時のみ周波数とQ値を再計算
     if (activeBands != lastActiveBands)
     {
         float minFreq = 100.0f;
         float maxFreq = 8000.0f;
         
-        // 隣接バンド間の周波数比率（数式における 2^N に該当）
+        // 隣接する1バンド間の周波数比率
         float ratio = std::pow(maxFreq / minFreq, 1.0f / (float)(activeBands - 1));
-
-        // 数式に基づく動的Q値の計算: Q = sqrt(R) / (R - 1)
-        float dynamicQ = std::sqrt(ratio) / (ratio - 1.0f);
-
-        // ※補足：滑舌をより強調したい場合は、この dynamicQ に 1.2f〜1.5f ほどの係数を掛けて
-        // わざとQ値を少し高め（鋭く）設定するのも実践的なテクニックです。
+        
+        // フィルターの帯域幅を「隣接する2バンド分」に拡張するための数学的算出
+        // 帯域幅比率を ratio^2 とした場合のQ値の厳密な定義式
+        float dynamicQ = ratio / (std::pow(ratio, 2.0f) - 1.0f);
 
         for (int i = 0; i < activeBands; ++i)
         {
@@ -169,8 +175,6 @@ void VocoderAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
     float goodizePct = apvts.getRawParameterValue("goodize")->load() * 0.01f;
     float drive = 1.0f + (goodizePct * 4.0f); 
 
-    // ▼ 削除：以前あった float q = 2.0f; や、その下のQ値更新用 forループ はすべて削除！
-
     float attackMs = apvts.getRawParameterValue("attack")->load();
     float releaseMs = apvts.getRawParameterValue("release")->load();
     float gainLinear = juce::Decibels::decibelsToGain(apvts.getRawParameterValue("gain")->load());
@@ -179,7 +183,6 @@ void VocoderAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
     float attackCoef = std::exp(-1.0f / ((attackMs * 0.001f) * currentSampleRate));
     float releaseCoef = std::exp(-1.0f / ((releaseMs * 0.001f) * currentSampleRate));
     
-
     // --------------------------------------------------------------------------
     // 3. バスバッファの取得
     // --------------------------------------------------------------------------
@@ -190,51 +193,55 @@ void VocoderAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
 
     for (int s = 0; s < buffer.getNumSamples(); ++s)
     {
-        // 信号未接続時は無音（0.0f）に設定
-        // 信号の取得（キャリアはステレオで取得）
-        float modInput = voiceBuffer.getNumChannels() > 0 ? voiceBuffer.getSample(0, s) : 0.0f;
-        float carInputL = synthBuffer.getNumChannels() > 0 ? synthBuffer.getSample(0, s) : 0.0f;
-        float carInputR = synthBuffer.getNumChannels() > 1 ? synthBuffer.getSample(1, s) : carInputL; // キャリアがモノラルならRにはLと同じものを入れる
+        // ▼ 修正：まず原音（Dry）をピュアな状態で取得
+        float drySignal = voiceBuffer.getNumChannels() > 0 ? voiceBuffer.getSample(0, s) : 0.0f;
+        
+        // ▼ 追加：ボコーダー処理用のモジュレーター信号にのみ、強烈な高域ブーストを掛ける
+        float modInput = preEmphasisFilter.processSample(drySignal);
 
-        float drySignal = modInput; // モジュレーターの原音（必要に応じてLのみ）
+        // キャリアはステレオで取得
+        float carInputL = synthBuffer.getNumChannels() > 0 ? synthBuffer.getSample(0, s) : 0.0f;
+        float carInputR = synthBuffer.getNumChannels() > 1 ? synthBuffer.getSample(1, s) : carInputL;
+
         float outputSumL = 0.0f;
         float outputSumR = 0.0f;
+
         
         for (int b = 0; b < activeBands; ++b)
         {
-            // モジュレーターは1回のみ処理
             float m = modFilters[b].processSample(0, modInput);
-
-            // キャリアはLとRを独立して処理
             float cL = carFiltersL[b].processSample(0, carInputL);
             float cR = carFiltersR[b].processSample(0, carInputR);
 
-            // モジュレーターからエンベロープ（声の動き）を抽出
             float rect = std::abs(m);
             if (rect > envelopes[b])
                 envelopes[b] = attackCoef * envelopes[b] + (1.0f - attackCoef) * rect;
             else
                 envelopes[b] = releaseCoef * envelopes[b] + (1.0f - releaseCoef) * rect;
 
-            // 抽出した1つの声の動きを、LとRのキャリアにそれぞれ掛ける
             outputSumL += cL * envelopes[b];
             outputSumR += cR * envelopes[b];
         }
 
-        // 音量補正
-        float wetSignalL = outputSumL * (8.0f / (float)activeBands);
-        float wetSignalR = outputSumR * (8.0f / (float)activeBands);
+        // ----------------------------------------------------------------------
+        // 5. 音量補正とサチュレーション
+        // ----------------------------------------------------------------------
+        // 複数の帯域を合成する際、エネルギー保存則（RMS加算則）に基づき 1 / √N で正規化
+        float scalingFactor = 1.0f / std::sqrt((float)activeBands);
+        
+        float wetSignalL = outputSumL * scalingFactor;
+        float wetSignalR = outputSumR * scalingFactor;
 
         // ミックス
         float mixedSignalL = (drySignal * mixDry) + (wetSignalL * mixWet);
-        float mixedSignalR = (drySignal * mixDry) + (wetSignalR * mixWet); // Dry音はモジュレーターのモノラル音を両耳に流す
+        float mixedSignalR = (drySignal * mixDry) + (wetSignalR * mixWet);
         
-        // サチュレーションと最終出力
-        channelData[s] = (std::tanh(mixedSignalL * drive) / std::tanh(drive)) * gainLinear; // Lチャンネル
+        // tanhによるソフトクリッピング（出力が数学的に必ず -1.0 〜 +1.0 の間に漸近する）
+        channelData[s] = std::tanh(mixedSignalL * drive) * gainLinear;
         
         if (buffer.getNumChannels() > 1)
         {
-            buffer.getWritePointer(1)[s] = (std::tanh(mixedSignalR * drive) / std::tanh(drive)) * gainLinear; // Rチャンネル
+            buffer.getWritePointer(1)[s] = std::tanh(mixedSignalR * drive) * gainLinear;
         }
     }
 }

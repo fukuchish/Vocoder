@@ -45,6 +45,9 @@ private:
     std::array<juce::dsp::StateVariableTPTFilter<float>, maxBands> carFiltersR; // 右チャンネル用
     std::array<float, maxBands> envelopes;
 
+    // ▼ 新規追加：モジュレーター高域強調用のハイシェルフEQ
+    juce::dsp::IIR::Filter<float> preEmphasisFilter;
+
 
     double currentSampleRate = 44100.0;
 
